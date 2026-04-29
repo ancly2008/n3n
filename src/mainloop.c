@@ -399,13 +399,45 @@ static void handle_fd(const time_t now, const struct fd_info info, struct n3n_ru
         }
 
         case fd_info_proto_v3udp: {
-            struct n3n_pktbuf *pkt = n3n_pktbuf_alloc(N2N_PKT_BUF_SIZE);
-            if (!pkt) {
-                abort(); // allocation failure is fatal
+            // 1. 静态分配或重用缓冲区，避免频繁 alloc/free
+            static struct udp_batch batch; 
+            static bool initialized = false;
+            
+            if (!initialized) {
+                memset(&batch, 0, sizeof(batch));
+                for (int i = 0; i < V3_BATCH_SIZE; i++) {
+                    batch.iovecs[i].iov_base = batch.bufs[i];
+                    batch.iovecs[i].iov_len = N2N_PKT_BUF_SIZE;
+                    batch.msgs[i].msg_hdr.msg_iov = &batch.iovecs[i];
+                    batch.msgs[i].msg_hdr.msg_iovlen = 1;
+                    batch.msgs[i].msg_hdr.msg_name = &batch.addrs[i];
+                    batch.msgs[i].msg_hdr.msg_namelen = sizeof(struct sockaddr_in);
+                }
+                initialized = true;
             }
-            pkt->owner = n3n_pktbuf_owner_rx_pdu;
-            edge_read_proto3_udp(eee, info.fd, pkt, now);
-            n3n_pktbuf_free(pkt);
+
+            // 2. 使用 recvmmsg 一次性读取最多 32 个包
+            struct timespec timeout = {0, 0}; // 非阻塞
+            int num_pkts = recvmmsg(info.fd, batch.msgs, V3_BATCH_SIZE, MSG_DONTWAIT, &timeout);
+            
+            if (num_pkts <= 0) return;
+
+            // 3. 循环处理接收到的包
+            for (int i = 0; i < num_pkts; i++) {
+                struct n3n_pktbuf *pkt = n3n_pktbuf_alloc(batch.msgs[i].msg_len);
+                if (pkt) {
+                    pkt->owner = n3n_pktbuf_owner_rx_pdu;
+                    memcpy(pkt->data, batch.bufs[i], batch.msgs[i].msg_len);
+                    pkt->size = batch.msgs[i].msg_len;
+                    
+                    // 这里需要稍微重构 edge_read_proto3_udp 
+                    // 或者调用更底层的 edge_handle_packet
+                    // 传入 batch.addrs[i] 作为发送方地址
+                    process_v3_packet(eee, pkt, &batch.addrs[i], now);
+                    
+                    n3n_pktbuf_free(pkt);
+                }
+            }
             return;
         }
 
