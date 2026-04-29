@@ -44,6 +44,18 @@
 #include <sys/socket.h>      // for AF_INET, PF_INET, bind, setsockopt, shut...
 #endif
 
+// 在头文件或 n2n.c 中定义
+#include <sys/socket.h>
+
+#define V3_BATCH_SIZE 32
+
+// 定义一个结构来暂存批量数据
+struct udp_batch {
+    struct mmsghdr msgs[V3_BATCH_SIZE];
+    struct iovec iovecs[V3_BATCH_SIZE];
+    uint8_t bufs[V3_BATCH_SIZE][N2N_PKT_BUF_SIZE];
+    struct sockaddr_in addrs[V3_BATCH_SIZE];
+};
 
 /* ************************************** */
 
